@@ -1,0 +1,681 @@
+<!DOCTYPE html>
+<html lang="en">
+	<head>
+		<meta http-equiv="Content-Type" content="text/html; charset=UTF-8">
+		<meta charset="utf-8">
+		<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+		<title>Broken Mantra - Ayu</title>
+		<style>
+			html {
+				height: 100%;
+			}
+			body {
+				width: 100%;
+				height: 100%;
+
+				display: flex;
+				justify-content: center;
+				align-items: center;
+
+				margin: 0;
+				padding: 0;
+
+				color: #fff;
+
+				font-family: Serif;
+				font-style: italic;
+
+				background-color: #000;
+
+				overflow: hidden;
+			}
+			a {
+				color: #00f;
+				text-decoration: none;
+			}
+			hr {
+				border: 0;
+				border-top: 1px solid #333;
+				margin: 40px 0px;
+			}
+			#info {
+				text-align: center;
+			}
+			#title {
+				font-size: 36px;
+				margin: 10px;
+			}
+			#meta {
+				font-size: 16px;
+			}
+			#start {
+				display: inline-block;
+				border: 1px solid #ff0044;
+				color: #ff0044;
+				cursor: pointer;
+				font-size: 18px;
+				padding: 8px 16px;
+			}
+		</style>
+	</head>
+	<body>
+
+		<div id="info">
+			<div id="title">Broken Mantra</div>
+			<div id="meta">(from <a href="https://lorn.bandcamp.com/album/vessel" target="_blank">VESSEL</a> by <a href="http://lorn.bandcamp.com/" target="_blank">LORN</a>)</div>
+			<hr />
+			<div id="start">START</div>
+		</div>
+
+		<script src="js/three.min.js"></script>
+
+		<script src="js/WebVR.js"></script>
+		<script src="js/VRControls.js"></script>
+		<script src="js/ModifiedVREffect.js"></script>
+
+		<script src="js/GPGPU.js"></script>
+		<script src="js/gpgpu/SimulationShader.js"></script>
+		<script src="js/gpgpu/BlurShader.js"></script>
+		<script src="js/gpgpu/CopyShader.js"></script>
+		<script src="js/gpgpu/MixShader.js"></script>
+
+		<script src="js/AudioAnalyser.js"></script>
+		<script src="js/text.js"></script>
+
+		<script id="vs-render" type="x-shader/x-vertex">
+
+			uniform sampler2D map;
+
+			uniform float pointSize;
+
+			uniform float size;
+
+			varying vec3 vPosition;
+			varying float opacity;
+
+			void main() {
+
+				vec2 uv = position.xy + vec2( 0.5 / size, 0.5 / size );
+
+				vec4 data = texture2D( map, uv );
+
+				vPosition = data.xyz;
+				opacity = data.w;
+
+				gl_PointSize = ( data.w + 1.0 ) * pointSize;
+				gl_Position = projectionMatrix * modelViewMatrix * vec4( vPosition, 1.0 );
+
+			}
+
+		</script>
+
+		<script id="fs-render" type="x-shader/x-fragment">
+
+			uniform vec3 pointColor;
+
+			varying vec3 vPosition;
+			varying float opacity;
+
+			void main() {
+
+				vec3 color = pointColor + vPosition * 0.002;
+				vec3 circle = vec3( 1.0 - length( gl_PointCoord.xy - 0.5 ) * 2.0 );
+
+				gl_FragColor = vec4( min( color, circle ), opacity );
+
+			}
+
+		</script>
+
+		<script>
+
+			var isWebVR = location.search === '?webvr';
+
+			if ( isWebVR ) {
+
+				if ( WEBVR.isLatestAvailable() === false ) {
+
+					document.body.appendChild( WEBVR.getMessage() );
+
+				}
+
+			}
+
+			var audio = document.createElement( 'audio' );
+			audio.controls = true;
+			audio.style.position = 'absolute';
+			audio.style.left = 'calc(50% - 150px)';
+			audio.style.bottom = '25px';
+			audio.style.display = 'none';
+			audio.style.opacity = 0;
+			audio.style.transition = 'opacity 1s';
+			document.body.appendChild( audio );
+
+			var source = document.createElement( 'source' );
+			source.src = 'BROKEN MANTRA.ogg';
+			source.type = 'audio/ogg';
+			audio.appendChild( source );
+
+			var source = document.createElement( 'source' );
+			source.src = 'BROKEN MANTRA.mp3';
+			source.type = 'audio/mpeg';
+			audio.appendChild( source );
+
+			var analyser;
+
+			var scene, camera, renderer;
+			var particleMaterial, lineMaterial;
+			var wireframe;
+
+			var dolly;
+
+			var gpgpu, simulationShader;
+			var copyShader, blurShader, mixShader;
+
+			var fboParticles, rtTexturePos, rtTexturePos2;
+			var rtPost1, rtPost2, rtPost3;
+
+			var count = 0;
+
+			var controls, effect;
+
+			//
+
+			renderer = new THREE.WebGLRenderer( { antialias: false, stencil: false } );
+			renderer.setSize( window.innerWidth, window.innerHeight );
+
+			camera = new THREE.PerspectiveCamera( 50, window.innerWidth / window.innerHeight, 0.1, 400 );
+
+			if ( isWebVR ) {
+
+				controls = new THREE.VRControls( camera );
+				effect = new THREE.VREffect( renderer );
+				effect.setSize( window.innerWidth, window.innerHeight );
+
+				if ( WEBVR.isAvailable() === true ) {
+
+					document.body.appendChild( WEBVR.getButton( effect ) );
+
+				}
+
+			}
+
+			function init() {
+
+				renderer.domElement.addEventListener( 'dblclick', function ( event ) {
+
+					var element = document.body;
+
+					if ( element.requestFullscreen ) {
+
+						element.requestFullscreen( { navigationUI: 'hide' } );
+
+					}
+
+				} );
+				document.body.appendChild( renderer.domElement );
+
+				var gl = renderer.context;
+
+				if ( gl.getExtension( "OES_texture_float" ) === null ) {
+
+					alert( "No OES_texture_float support for float textures!" );
+					return;
+
+				}
+
+				if ( gl.getParameter( gl.MAX_VERTEX_TEXTURE_IMAGE_UNITS ) === 0 ) {
+
+					alert( "No support for vertex shader textures!" );
+					return;
+
+				}
+
+				scene = new THREE.Scene();
+
+				dolly = new THREE.Camera();
+				dolly.add( camera );
+
+				scene.add( dolly );
+
+				//
+
+				lineMaterial = new THREE.LineBasicMaterial( {
+					color: 0x880000,
+					blending: THREE.AdditiveBlending,
+					depthTest: false,
+					linewidth: 2,
+					transparent: true
+				} );
+
+				camera.add( new THREE.LineSegments( new Text( 'LORN' ), lineMaterial ) );
+				camera.add( new THREE.LineSegments( new Text( 'BROKEN MANTRA' ), lineMaterial ) );
+				camera.add( new THREE.LineSegments( new Text( 'MRDOOB / TDF 2016' ), lineMaterial ) );
+
+				var size = 1024;
+
+				var geometry = new THREE.IcosahedronGeometry( 150, 4 );
+				geometry.merge( new THREE.IcosahedronGeometry( 30, 2 ) );
+				geometry.merge( new THREE.IcosahedronGeometry( 150, 4 ).translate( 0, 0, - 350 ) );
+				geometry.merge( new THREE.IcosahedronGeometry( 10, 2 ).translate( 0, 0, - 350 ) );
+
+				/*
+				var material = new THREE.MeshBasicMaterial( {
+					color: 0x00ff00,
+					opacity: 0.1,
+					blending: THREE.AdditiveBlending,
+					wireframe: true,
+					transparent: true
+				} );
+				*/
+
+				var material = new THREE.MeshBasicMaterial( {
+					color: 0x000000,
+					side: THREE.DoubleSide
+				} );
+
+				var mesh = new THREE.Mesh( geometry, material );
+				mesh.frustumCulled = false;
+				scene.add( mesh );
+
+				/*
+
+				var material = new THREE.LineBasicMaterial( {
+					color: 0xff0088,
+					side: THREE.DoubleSide,
+					wireframe: true,
+					depthWrite: false,
+					blending: THREE.AdditiveBlending,
+					transparent: true
+				} );
+
+				wireframe = new THREE.LineSegments( new THREE.WireframeGeometry( geometry ), material );
+				wireframe.frustumCulled = false;
+				scene.add( wireframe );
+
+				*/
+
+				var data = new Float32Array( size * size * 4 );
+
+				//
+
+				var point = new THREE.Vector3();
+				var facesLength = geometry.faces.length;
+
+				for ( var i = 0, l = data.length; i < l; i += 4 ) {
+
+					var point = geometry.vertices[ Math.floor( Math.random() * geometry.vertices.length ) ];
+
+					data[ i ] = point.x;
+					data[ i + 1 ] = point.y;
+					data[ i + 2 ] = point.z;
+					data[ i + 3 ] = Math.random();
+
+				}
+
+				/*
+				for ( var i = 0, l = data.length; i < l; i += 3 ) {
+
+					var face = geometry.faces[ Math.floor( Math.random() * facesLength ) ];
+
+					var vertex1 = geometry.vertices[ face.a ];
+					var vertex2 = geometry.vertices[ Math.random() > 0.5 ? face.b : face.c ];
+
+					point.subVectors( vertex2, vertex1 );
+					point.multiplyScalar( Math.random() );
+					point.add( vertex1 );
+
+					data[ i ] = point.x;
+					data[ i + 1 ] = point.y;
+					data[ i + 2 ] = point.z;
+
+				}
+				*/
+
+				gpgpu = new GPGPU( renderer );
+
+				simulationShader = new GPGPU.SimulationShader();
+
+				var originsTexture = new THREE.DataTexture( data, size, size, THREE.RGBAFormat, THREE.FloatType );
+				originsTexture.minFilter = THREE.NearestFilter;
+				originsTexture.magFilter = THREE.NearestFilter;
+				originsTexture.generateMipmaps = false;
+				originsTexture.needsUpdate = true;
+
+				simulationShader.setOriginsTexture( originsTexture );
+
+				rtTexturePos = new THREE.WebGLRenderTarget( size, size, {
+					minFilter: THREE.NearestFilter,
+					magFilter: THREE.NearestFilter,
+					format: THREE.RGBAFormat,
+					type: THREE.FloatType,
+					depthBuffer: false,
+					stencilBuffer: false
+				} );
+
+				rtTexturePos2 = rtTexturePos.clone();
+
+				var positions = new Float32Array( size * size * 3 );
+
+				for ( var i = 0, j = 0, l = positions.length / 3; i < l; i ++, j += 3 ) {
+
+					positions[ j + 0 ] = ( i % size ) / size;
+					positions[ j + 1 ] = Math.floor( i / size ) / size;
+
+				}
+
+				var geometry = new THREE.BufferGeometry();
+				geometry.addAttribute( 'position', new THREE.BufferAttribute( positions, 3 ) );
+
+				particleMaterial = new THREE.ShaderMaterial( {
+
+					uniforms: {
+
+						"map": { type: "t", value: rtTexturePos },
+						"size": { type: "f", value: size },
+
+						"pointColor": { type: "v3", value: new THREE.Vector3() },
+						"pointSize": { type: "f", value: window.innerHeight / 600 }
+
+					},
+					vertexShader: document.getElementById( 'vs-render' ).textContent,
+					fragmentShader: document.getElementById( 'fs-render' ).textContent,
+					blending: THREE.AdditiveBlending,
+					depthWrite: false,
+					transparent: true
+
+				} );
+
+				var points = new THREE.Points( geometry, particleMaterial );
+				points.frustumCulled = false;
+				scene.add( points );
+
+				/*
+				var mesh = new THREE.Mesh(
+					new THREE.CubeGeometry( 500, 500, 500 ),
+					new THREE.MeshBasicMaterial( { color: 0xffffff, wireframe: true, opacity: 0.1, transparent: true } )
+				);
+				scene.add( mesh );
+				*/
+
+				rtPost1 = new THREE.WebGLRenderTarget( window.innerWidth, window.innerHeight, { minFilter: THREE.LinearFilter } );
+				rtPost1.texture.generateMipmaps = false;
+
+				rtPost2 = new THREE.WebGLRenderTarget( window.innerWidth / 8, window.innerHeight / 8, { minFilter: THREE.LinearFilter } );
+				rtPost2.texture.generateMipmaps = false;
+
+				rtPost3 = new THREE.WebGLRenderTarget( window.innerWidth / 8, window.innerHeight / 8, { minFilter: THREE.LinearFilter } );
+				rtPost3.texture.generateMipmaps = false;
+
+				copyShader = new GPGPU.CopyShader();
+				blurShader = new GPGPU.BlurShader();
+				mixShader = new GPGPU.MixShader();
+
+				if ( isWebVR ) {
+
+					controls.resetPose();
+
+				}
+
+				//
+
+				window.addEventListener( 'resize', onWindowResize, false );
+
+				//
+
+				var timeoutID;
+
+				var showControls = function ( event ) {
+
+					audio.style.opacity = 0.5;
+					document.body.style.cursor = 'default';
+
+					if ( timeoutID !== undefined ) {
+
+						clearTimeout( timeoutID );
+
+					}
+
+					timeoutID = setTimeout( function () {
+
+						audio.style.opacity = 0;
+						document.body.style.cursor = 'none';
+
+					}, 1000 );
+
+				};
+
+				document.addEventListener( 'mousemove', showControls );
+				document.addEventListener( 'touchstart', showControls );
+
+				analyser = new AudioAnalyser( audio );
+
+				audio.style.display = '';
+
+				animate();
+
+			}
+
+			function onWindowResize() {
+
+				camera.aspect = window.innerWidth / window.innerHeight;
+				camera.updateProjectionMatrix();
+
+				rtPost1.setSize( window.innerWidth, window.innerHeight );
+				rtPost2.setSize( window.innerWidth / 8, window.innerHeight / 8 );
+				rtPost3.setSize( window.innerWidth / 8, window.innerHeight / 8 );
+
+				renderer.setSize( window.innerWidth, window.innerHeight );
+
+				particleMaterial.uniforms.pointSize.value = window.innerHeight / 600;
+
+				if ( isWebVR ) {
+
+					effect.setSize( window.innerWidth, window.innerHeight );
+
+				}
+
+			}
+
+			function animate() {
+
+				requestAnimationFrame( animate );
+				render();
+
+			}
+
+			function setText( id ) {
+
+				for ( var i = 0; i < camera.children.length; i ++ ) {
+
+					var child = camera.children[ i ];
+
+					child.position.z = - 70;
+					child.visible = i === id;
+
+				}
+
+			}
+
+			function render() {
+
+				analyser.update();
+
+				var timer = audio.currentTime;
+
+				// console.log( audio.currentTime );
+
+				// TEXTS
+
+				if ( timer > 12 && timer < 22 ) {
+
+					setText( 0 );
+
+				} else if ( timer > 32.1 && timer < 42.1 ) {
+
+					setText( 1 );
+
+				} else if ( timer > 144.5 && timer < 149.6 ) {
+
+					setText( 2 );
+
+				} else {
+
+					setText( - 1 );
+
+				}
+
+				// SCENES
+
+				if ( timer < 52.25 ) {
+
+					var progress = timer / 52.5;
+					var distance = THREE.Math.mapLinear( timer, 0, 52.5, 350, 180 );
+
+					// dolly.position.x = - Math.cos( timer * 0.01 ) * distance;
+					// dolly.position.z = Math.sin( timer * 0.01 ) * distance;
+					dolly.position.z = distance;
+					dolly.lookAt( scene.position );
+					dolly.rotation.z = timer / 20;
+
+				} else if ( timer < 72.5 ) {
+
+					var distance = THREE.Math.mapLinear( timer, 52.5, 92.6, 140, 80 );
+
+					dolly.position.x = - Math.cos( timer * 0.03 ) * distance;
+					dolly.position.z = Math.sin( timer * 0.03 ) * distance;
+					dolly.lookAt( scene.position );
+					dolly.rotation.z = timer / 20;
+
+				} else if ( timer < 92.65 ) {
+
+					var distance = THREE.Math.mapLinear( timer, 52.5, 92.65, 120, 50 );
+
+					dolly.position.x = - Math.cos( timer * 0.03 ) * distance;
+					dolly.position.z = Math.sin( timer * 0.03 ) * distance;
+					dolly.lookAt( scene.position );
+					dolly.rotation.z = timer / 20;
+
+				} else if ( timer < 113.1 ) {
+
+					var distance = THREE.Math.mapLinear( timer, 92.6, 113.1, 20, 240 );
+
+					dolly.position.x = distance; // - Math.cos( timer * 0.03 ) * distance;
+					dolly.position.y = 0;
+					dolly.position.z = - 175;
+
+					dolly.lookAt( new THREE.Vector3( 0, 0, - 175 ) );
+					dolly.rotation.z = timer / 20;
+
+				} else if ( timer < 143.2 ) {
+
+					var progress = THREE.Math.mapLinear( timer, 113.1, 143.2, 1, 0 );
+
+					dolly.position.x = Math.sin( timer * 0.037 ) * 200;
+					dolly.position.y = 0;
+					dolly.position.z = Math.cos( timer * 0.037 ) * 200;
+					dolly.lookAt( new THREE.Vector3( 0, 50, - 250 * progress ) );
+					dolly.rotation.z = timer / 20;
+
+				} else if ( timer < 144.5 ) {
+
+					dolly.position.x = 10000;
+
+				} else {
+
+					dolly.position.x = ( Math.cos( timer * 0.03 ) * 50 );
+					dolly.position.z = ( Math.sin( timer * 0.03 ) * 50 ) - 350;
+					dolly.lookAt( new THREE.Vector3( 0, 0, - 350 ) );
+					dolly.rotation.z = timer / 20;
+
+				}
+
+				lineMaterial.color.r = Math.pow( analyser.getFrequency()[ 4 ] / 128, 2 );
+				lineMaterial.color.g = Math.pow( analyser.getFrequency()[ 4 ] / 128, 8 );
+				lineMaterial.color.b = Math.pow( analyser.getFrequency()[ 4 ] / 128, 4 );
+				// wireframe.material.opacity = Math.pow( analyser.getFrequency()[ 9 ] / 256, 2 );
+
+				particleMaterial.uniforms.pointColor.value.x = analyser.getFrequency()[ 4 ] / 64;
+				particleMaterial.uniforms.pointColor.value.y = analyser.getFrequency()[ 4 ] / 1024;
+				particleMaterial.uniforms.pointColor.value.z = analyser.getFrequency()[ 9 ] / 400;
+				// particleMaterial.uniforms.pointColor.value.z = analyser.getFrequency()[ 15 ] / 50;
+
+				var opacity = analyser.getFrequency()[ 4 ] / 128;
+
+				// opacity += Math.pow( analyser.getFrequency()[ 9 ] / 256, 4 );
+				opacity += analyser.getFrequency()[ 15 ] / 32;
+
+				// if ( analyser.getFrequency()[ 9 ] > 64 ) opacity *= 2;
+				// if ( analyser.getFrequency()[ 73 ] > 16 ) opacity *= 6;
+
+				simulationShader.setOpacity( opacity );
+				simulationShader.setTimer( timer );
+
+				if ( count % 2 === 0 ) {
+
+					gpgpu.pass( simulationShader.setPositionsTexture( rtTexturePos ), rtTexturePos2 );
+					particleMaterial.uniforms.map.value = rtTexturePos2;
+
+				} else {
+
+					gpgpu.pass( simulationShader.setPositionsTexture( rtTexturePos2 ), rtTexturePos );
+					particleMaterial.uniforms.map.value = rtTexturePos;
+
+				}
+
+				count ++;
+
+				if ( isWebVR ) {
+
+					controls.update();
+					effect.render( scene, camera );
+
+				} else {
+
+					gpgpu.render( scene, camera, rtPost1 );
+
+					// post processing
+
+					gpgpu.pass( copyShader.setTexture( rtPost1 ), rtPost2 );
+
+					for ( var i = 0; i < 16; i ++ ) {
+
+						gpgpu.pass( blurShader.setTexture( rtPost2 ).setDelta( 1 / rtPost2.width,  0 ), rtPost3 );
+						gpgpu.pass( blurShader.setTexture( rtPost3 ).setDelta( 0, 1 / rtPost2.height ), rtPost2 );
+
+					}
+
+					gpgpu.out( mixShader.setTextures( rtPost1, rtPost2 ) );
+
+				}
+
+			}
+
+			//
+
+			var info = document.getElementById( 'info' );
+			var start = document.getElementById( 'start' );
+			start.addEventListener( 'click', async function ( event ) {
+
+				document.body.style.cursor = 'none';
+				info.style.display = 'none';
+
+				audio.play();
+
+				if ( 'wakeLock' in navigator ) {
+
+					try {
+
+						await navigator.wakeLock.request( 'screen' );
+
+					} catch ( err ) {}
+
+				}
+				
+				init();
+
+			} );
+
+		</script>
+	</body>
+</html>
